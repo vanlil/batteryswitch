@@ -10,6 +10,8 @@ installer, no configuration, ~1.3 MB private working set.
 
 Windows 10 1803 or later, or Windows 11.
 
+![The tray icon in balanced mode, showing its tooltip](docs/screenshot.png)
+
 ## Using it
 
 Run `PowerModeTray.exe`. The icon shows the current mode as a battery with one,
