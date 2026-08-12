@@ -15,7 +15,7 @@ Windows 10 1803 or later, or Windows 11.
 ## Using it
 
 Download `PowerModeTray.exe` from [Releases](../../releases/latest) and run it;
-there is nothing to install. It is unsigned, so SmartScreen warns on first run —
+there is nothing to install. It is unsigned, so **SmartScreen** warns on first run —
 choose **More info**, then **Run anyway**.
 
 The icon shows the current mode as a battery with one, two, or three bars.
