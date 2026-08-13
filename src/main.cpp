@@ -39,6 +39,7 @@ HANDLE g_singleInstance = nullptr;
 HPOWERNOTIFY g_powerNotify = nullptr;
 HKEY g_themeKey = nullptr;
 HANDLE g_themeEvent = nullptr;
+bool g_sessionNotify = false;
 UINT g_taskbarCreated = 0;
 bool g_iconAdded = false;
 bool g_useGuidIcon = true;
@@ -207,10 +208,21 @@ bool BuildMenu() {
                      Str(IDS_MENU_AUTOSTART, text, ARRAYSIZE(text))))
         return false;
     if (!AppendMenuW(g_menu, MF_SEPARATOR, 0, nullptr)) return false;
+    if (!AppendMenuW(g_menu, MF_STRING, IDM_ABOUT,
+                     Str(IDS_MENU_ABOUT, text, ARRAYSIZE(text))))
+        return false;
     if (!AppendMenuW(g_menu, MF_STRING, IDM_QUIT,
                      Str(IDS_MENU_QUIT, text, ARRAYSIZE(text))))
         return false;
     return true;
+}
+
+// Hands the project page to whatever the user has set as their browser. The URL
+// is a resource string, never anything read from outside the process.
+void OpenProjectPage() {
+    wchar_t url[256];
+    if (!*Str(IDS_ABOUT_URL, url, ARRAYSIZE(url))) return;
+    ShellExecuteW(nullptr, L"open", url, nullptr, nullptr, SW_SHOWNORMAL);
 }
 
 void ShowContextMenu(int x, int y) {
@@ -305,6 +317,7 @@ LRESULT CALLBACK WndProc(HWND wnd, UINT msg, WPARAM wp, LPARAM lp) {
                 case IDM_MODE_BALANCED: ApplyMode(PowerMode::Balanced); return 0;
                 case IDM_MODE_PERF:     ApplyMode(PowerMode::Performance); return 0;
                 case IDM_AUTOSTART:     AutostartSet(!AutostartIsEnabled()); return 0;
+                case IDM_ABOUT:         OpenProjectPage(); return 0;
                 case IDM_QUIT:          DestroyWindow(wnd); return 0;
                 default:                break;
             }
@@ -322,13 +335,16 @@ LRESULT CALLBACK WndProc(HWND wnd, UINT msg, WPARAM wp, LPARAM lp) {
             break;
 
         case WM_POWERBROADCAST:
+            // Only the setting change is ours; everything else falls through to
+            // DefWindowProc rather than claiming to be handled.
             if (wp == PBT_POWERSETTINGCHANGE) {
                 const POWERBROADCAST_SETTING* s =
                     reinterpret_cast<const POWERBROADCAST_SETTING*>(lp);
                 if (s && IsEqualGUID(s->PowerSetting, kGuidAcDcPowerSource))
                     ResyncFromSystem();
+                return TRUE;
             }
-            return TRUE;
+            break;
 
         case WM_WTSSESSION_CHANGE:
             if (wp == WTS_SESSION_UNLOCK || wp == WTS_SESSION_LOGON) ResyncFromSystem();
@@ -384,7 +400,10 @@ void Cleanup() {
         g_powerNotify = nullptr;
     }
     if (g_wnd) {
-        WTSUnRegisterSessionNotification(g_wnd);
+        if (g_sessionNotify) {
+            WTSUnRegisterSessionNotification(g_wnd);
+            g_sessionNotify = false;
+        }
         KillTimer(g_wnd, kTimerResync);
     }
     RemoveTrayIcon();
@@ -458,7 +477,10 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int) {
     StartThemeWatch();
     g_powerNotify = RegisterPowerSettingNotification(g_wnd, &kGuidAcDcPowerSource,
                                                      DEVICE_NOTIFY_WINDOW_HANDLE);
-    WTSRegisterSessionNotification(g_wnd, NOTIFY_FOR_THIS_SESSION);
+    // Failure costs only the unlock resync; the 60 s timer still covers it. What
+    // it must not do is leave Cleanup() unregistering something never registered.
+    g_sessionNotify =
+        WTSRegisterSessionNotification(g_wnd, NOTIFY_FOR_THIS_SESSION) != FALSE;
     SetTimer(g_wnd, kTimerResync, kResyncMs, nullptr);
 
     const int code = RunMessageLoop();

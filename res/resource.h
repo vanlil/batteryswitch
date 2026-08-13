@@ -18,10 +18,13 @@
 #define IDS_UNAVAILABLE     206
 #define IDS_MENU_AUTOSTART  207
 #define IDS_MENU_QUIT       208
+#define IDS_MENU_ABOUT      209
+#define IDS_ABOUT_URL       210
 
 // Menu command ids.
 #define IDM_MODE_EFF        301
 #define IDM_MODE_BALANCED   302
 #define IDM_MODE_PERF       303
 #define IDM_AUTOSTART       304
-#define IDM_QUIT            305
+#define IDM_ABOUT           305
+#define IDM_QUIT            306

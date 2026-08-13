@@ -53,7 +53,8 @@ Failure modes to handle, not assume away:
 
 - Left click (`WM_LBUTTONUP` on `NIN_SELECT`): cycle efficiency → balanced → performance → efficiency.
 - Right click: `TrackPopupMenuEx` with `TPM_RIGHTBUTTON`. Three radio-checked mode items
-  (`CheckMenuRadioItem`), separator, `Launch on logon` (`MF_CHECKED` toggle), separator, `Quit`.
+  (`CheckMenuRadioItem`), separator, `Launch on logon` (`MF_CHECKED` toggle), separator,
+  `About...` (opens the project page via `ShellExecuteW`, URL from the string table), `Quit`.
   Call `SetForegroundWindow` before and post `WM_NULL` after, or the menu will not dismiss.
 - Autostart: `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`, value `PowerModeTray`, quoted
   full path from `GetModuleFileNameW`. Menu check state is read from the registry, not cached.
