@@ -18,8 +18,7 @@ Download `PowerModeTray.exe` from [Releases](../../releases/latest) and run it;
 there is nothing to install. It is unsigned, so **SmartScreen** warns on first run —
 choose **More info**, then **Run anyway**.
 
-The icon shows the current mode as a lightning bolt with one, two, or three bars
-across it.
+The icon is a gauge whose needle points low, middle, or high for the current mode.
 
 - **Left click** — cycle: best power efficiency → balanced → best performance.
 - **Right click** — pick a mode directly, toggle **Launch on logon**, or quit.

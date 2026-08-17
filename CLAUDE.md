@@ -100,12 +100,13 @@ hard-coded. The underlying invocation is `cmake --preset vs2026` (Visual Studio 
 `CMakeLists.txt` strips the `/EHsc` and `/O2` CMake injects by default — do not reintroduce them.
 The manifest is embedded via the `.rc`, so the link uses `/MANIFEST:NO`.
 
-The six `res/icons/*.ico` are final art: an upright lightning bolt spanning the full height, with
-one, two, or three horizontal bars stacked over it — efficiency, balanced, performance — monochrome
-so the glyph follows the taskbar theme rather than the mode. Because there is only one colour, each
-bar knocks a transparent margin out of the bolt; without that the two shapes merge. Treat them as
-source. Any replacement keeps the file names and the 16/20/24/32 frame set, and snaps bar geometry
-to whole pixels — at 16 px unsnapped bars downsample to grey mush.
+The six `res/icons/*.ico` are final art: a speedometer — an arc open at the bottom with a needle
+pointing low, middle, or high for efficiency, balanced, and performance — monochrome so the glyph
+follows the taskbar theme rather than the mode. Needle *angle* carries the state, which is why this
+survives 16 px where counting bars did not. Treat them as source. Any replacement keeps the file
+names and the 16/20/24/32 frame set. Two things the 16 px frame will punish: a needle long enough to
+touch the arc (the two merge into a closed blob) and a centre hub at all (same problem) — the hub is
+drawn only at 20 px and above.
 
 ## Verification
 
