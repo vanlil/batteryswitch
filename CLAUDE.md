@@ -9,12 +9,11 @@ No installer, single .exe, target working set < 4 MB.
 
 ## Hard constraints
 
-- Pure Win32 + COM-free. No MFC, ATL, Qt, WIL, STL containers in hot paths, no third-party deps.
-- C++20, MSVC (`cl`), CMake ≥ 3.25. `/MT`, `/GR-`, `/EHsc-` (`/EHs-c-`), `/O1`, `/GS-` off only if measured.
-- No CRT startup bloat: `wWinMain`, no iostreams, no `std::string` in the message loop.
+- Pure Win32, COM-free. No MFC, ATL, Qt, WIL, STL containers in hot paths, no third-party deps.
+- C++20, MSVC, CMake ≥ 3.25. `/MT`, `/GR-`, `/EHs-c-`, `/O1`. `/GS-` off only if measured.
+- `wWinMain`, no iostreams, no `std::string` in the message loop.
+- UNICODE only. Per-monitor DPI v2 via manifest. `asInvoker` — never elevate.
 - Single instance: named mutex `Local\PowerModeTray.SingleInstance`; second launch exits silently.
-- UNICODE / _UNICODE only. Per-monitor DPI v2 via manifest (`dpiAwareness = PerMonitorV2`).
-- Manifest requires `comctl32` v6 and `requestedExecutionLevel=asInvoker`. Never elevate.
 
 ## Power mode API (undocumented — isolate in `overlay.cpp`)
 
@@ -22,122 +21,107 @@ Resolve by name from `powrprof.dll` with `GetProcAddress`; never link statically
 
 ```cpp
 DWORD (WINAPI *PowerSetActiveOverlayScheme)(GUID overlay);
-DWORD (WINAPI *PowerGetActualOverlayScheme)(GUID* out);   // user selection
+DWORD (WINAPI *PowerGetActualOverlayScheme)(GUID* out);    // user selection
 DWORD (WINAPI *PowerGetEffectiveOverlayScheme)(GUID* out); // what the OS applies now
 ```
-
-Overlay GUIDs:
 
 | Mode | GUID |
 |---|---|
 | Best power efficiency | `961cc777-2547-4f9d-8174-7d86181b8a7a` |
-| Balanced (recommended) | `GUID_NULL` (all zeros) |
+| Balanced | `GUID_NULL` (all zeros) |
 | Best performance | `ded574b5-45a0-4f42-8737-46345c09c238` |
 
-Failure modes to handle, not assume away:
+- Returns a Win32 error code (0 = success), not an HRESULT.
+- Any export missing → tray icon stays, mode commands greyed, `IDS_UNAVAILABLE` tooltip. Never crash,
+  never fall back to classic schemes.
+- Overlays are unsupported on some desktops/OEM configs; a set can succeed while
+  `PowerGetEffectiveOverlayScheme` disagrees. The UI reflects **actual**, not effective.
+- Keep every use behind `overlay.h`: one file is the blast radius of a Windows change.
 
-- Any export missing → show the tray icon disabled with a tooltip, do not crash, do not fall back to
-  classic schemes.
-- `PowerSetActiveOverlayScheme` returns a Win32 error code (0 = success), not HRESULT.
-- Overlays are unsupported on some desktops/OEM configs and under some AC/DC policies; a set can
-  succeed while `PowerGetEffectiveOverlayScheme` reports something else. Icon reflects **actual**,
-  not effective.
-- Overlay changes broadcast **no** notification. `GUID_POWERSCHEME_PERSONALITY` does **not** fire for
-  overlay changes. Resync by querying `PowerGetActualOverlayScheme` on `WM_ENTERIDLE`/menu open,
-  on `WM_POWERBROADCAST` (`GUID_ACDC_POWER_SOURCE`), on `WM_WTSSESSION_CHANGE` unlock, and on a
-  60 s timer at most. No tight polling.
-- Undocumented ordinals/behaviour can change; keep every use behind `overlay.h` so one file is the
-  blast radius of a Windows change.
+### Resync
+
+Overlay changes broadcast nothing — `GUID_POWERSCHEME_PERSONALITY` does not fire for them. The power
+service mirrors the active overlay into `HKLM\SYSTEM\CurrentControlSet\Control\Power\User\PowerSchemes`
+(`ActiveOverlay{Ac,Dc}PowerScheme`), so a `RegNotifyChangeKeyValue` watch there is the primary signal
+(`KEY_NOTIFY` suffices, no elevation). Use it only as a *change signal* and re-read through
+`PowerGetActualOverlayScheme` — parsing those values makes the AC/DC split your problem. Backstops:
+menu open, `WM_ENTERIDLE`, `WM_POWERBROADCAST` (`GUID_ACDC_POWER_SOURCE`), `WM_WTSSESSION_CHANGE`
+unlock, 60 s timer. No tight polling.
 
 ## Behaviour
 
-- Left click (`WM_LBUTTONUP` on `NIN_SELECT`): cycle efficiency → balanced → performance → efficiency.
+- Left click (`NIN_SELECT`): cycle efficiency → balanced → performance → efficiency.
 - Right click: `TrackPopupMenuEx` with `TPM_RIGHTBUTTON`. Three radio-checked mode items
-  (`CheckMenuRadioItem`), separator, `Launch on logon` (`MF_CHECKED` toggle), separator,
-  `About...` (opens the project page via `ShellExecuteW`, URL from the string table), `Quit`.
-  Call `SetForegroundWindow` before and post `WM_NULL` after, or the menu will not dismiss.
-- Autostart: `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`, value `PowerModeTray`, quoted
-  full path from `GetModuleFileNameW`. Menu check state is read from the registry, not cached.
-- OSD after every change: layered top-most window, `WS_EX_LAYERED | WS_EX_NOACTIVATE |
-  WS_EX_TOOLWINDOW | WS_EX_TRANSPARENT`, no taskbar entry, centered on the monitor under the
-  cursor (`MonitorFromPoint` → `MONITORINFO.rcWork`). ~180×64 px at 96 DPI, scaled by DPI.
-  `UpdateLayeredWindow` with a premultiplied 32-bit DIB; alpha 0.75 hold 1.2 s, then fade 250 ms.
-  Reuse one window and one DIB for the lifetime of the process — do not create per notification.
-  A rapid second click restarts the timer instead of stacking windows.
+  (`CheckMenuRadioItem`), separator, `Launch on logon` (`MF_CHECKED` toggle), separator, `About...`
+  (`ShellExecuteW`, URL from the string table), `Quit`. Call `SetForegroundWindow` before and post
+  `WM_NULL` after, or the menu will not dismiss.
+- Autostart: `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`, value `PowerModeTray`, quoted full
+  path from `GetModuleFileNameW`. Menu check state read from the registry, never cached.
+- OSD after every change: layered top-most window (`WS_EX_LAYERED | WS_EX_NOACTIVATE |
+  WS_EX_TOOLWINDOW | WS_EX_TRANSPARENT`), no taskbar entry, centered on the monitor under the cursor
+  (`MonitorFromPoint` → `MONITORINFO.rcWork`), ~180×64 px at 96 DPI and DPI-scaled.
+  `UpdateLayeredWindow` with a premultiplied 32-bit DIB; alpha 0.75 hold 1.2 s, then fade 250 ms. One
+  window and one DIB for the process lifetime; a rapid second click restarts the timer instead of
+  stacking windows.
 
 ## Tray icon
 
-- `Shell_NotifyIconW` with `NIF_GUID` and a fixed `guidItem` so position survives restarts.
-  Handle the registered `TaskbarCreated` message and re-add the icon after Explorer restarts.
-- Six embedded `.ico` resources: `{perf, balanced, eff} × {light, dark}`, each with 16/20/24/32 px
+- `Shell_NotifyIconW` with `NIF_GUID` and a fixed `guidItem` so position survives restarts. Handle the
+  registered `TaskbarCreated` message and re-add after Explorer restarts.
+- Six embedded `.ico` resources, `{perf, balanced, eff} × {light, dark}`, each with 16/20/24/32 px
   frames. Load with `LoadIconWithScaleDown` at `GetSystemMetricsForDpi(SM_CXSMICON, dpi)`.
-- Theme: read `HKCU\...\Themes\Personalize\SystemUsesLightTheme` (1 → dark glyph on light taskbar).
-  Watch with `RegNotifyChangeKeyValue` (async event, no polling thread spin) and on
-  `WM_SETTINGCHANGE` / `WM_DPICHANGED` reload the icon.
+- The art is a speedometer: an arc open at the bottom with a needle pointing low, middle, or high.
+  Monochrome, so the glyph follows the taskbar theme rather than the mode. Treat the files as source;
+  a replacement keeps the names and the frame set. At 16 px a needle long enough to touch the arc
+  merges into a closed blob, and a centre hub does the same — the hub is drawn only at 20 px and up.
+- Theme: `HKCU\...\Themes\Personalize\SystemUsesLightTheme` (1 → dark glyph on light taskbar). Watch
+  with `RegNotifyChangeKeyValue`; also reload on `WM_SETTINGCHANGE` / `WM_DPICHANGED`.
 - Tooltip = current mode name, from the string table.
 
-## Layout
+## Layout and build
 
 `src/` → `main.cpp` (window/message loop, tray, menu), `overlay.cpp/.h` (powrprof shim),
-`osd.cpp/.h` (layered window), `autostart.cpp/.h` (registry), `res/` (`.rc`, icons, manifest).
-
-## Build
+`osd.cpp/.h` (layered window), `autostart.cpp/.h` (registry); `res/` → `.rc`, icons, manifest.
 
 CMake is not on `PATH`, so use the top-level scripts rather than calling `cmake` directly:
 
 ```
 build           :: Release -> build\Release\PowerModeTray.exe
 build Debug     :: Debug   -> build\Debug\PowerModeTray.exe
-clean           :: removes build\ (leaves the checked-in icons alone)
+clean           :: removes build\
 ```
 
-`build.cmd` configures on first run only and holds the two tool paths as overridable variables —
-`VS_ROOT` (default `C:\Program Files\Microsoft Visual Studio\18\Community`) and `CMAKE`, derived
-from it. Point either at a different install to build with another toolchain; no other path is
-hard-coded. The underlying invocation is `cmake --preset vs2026` (Visual Studio 18 2026, x64) then
-`cmake --build build --config <cfg>`.
-
-`CMakeLists.txt` strips the `/EHsc` and `/O2` CMake injects by default — do not reintroduce them.
-The manifest is embedded via the `.rc`, so the link uses `/MANIFEST:NO`.
-
-The six `res/icons/*.ico` are final art: a speedometer — an arc open at the bottom with a needle
-pointing low, middle, or high for efficiency, balanced, and performance — monochrome so the glyph
-follows the taskbar theme rather than the mode. Needle *angle* carries the state, which is why this
-survives 16 px where counting bars did not. Treat them as source. Any replacement keeps the file
-names and the 16/20/24/32 frame set. Two things the 16 px frame will punish: a needle long enough to
-touch the arc (the two merge into a closed blob) and a centre hub at all (same problem) — the hub is
-drawn only at 20 px and above.
+`build.cmd` configures on first run only and holds `VS_ROOT` and `CMAKE` as overridable variables; no
+other path is hard-coded. `CMakeLists.txt` strips the `/EHsc` and `/O2` CMake injects by default — do
+not reintroduce them. The manifest is embedded via the `.rc`, so the link uses `/MANIFEST:NO`.
 
 ## Verification
 
-No unit test framework, by design — a test harness would be the first third-party dependency and
-the logic worth testing is almost all Win32 side effects. Verification is:
+No unit test framework, by design — it would be the first third-party dependency, and the logic worth
+testing is almost all Win32 side effects.
 
-- the build must stay clean at `/W4` (warnings are the closest thing to a test suite here),
-- `dumpbin /dependents` must not list `powrprof.dll` or `shcore.dll`; both are `GetProcAddress`-only,
-- private working set under 4 MB (`(Get-Counter "\Process(PowerModeTray)\Working Set - Private")`),
-- manual acceptance by the user.
+- The build stays clean at `/W4`.
+- `dumpbin /dependents` lists neither `powrprof.dll` nor `shcore.dll`; both are `GetProcAddress`-only.
+- Private working set under 4 MB (`Get-Counter "\Process(PowerModeTray)\Working Set - Private"`).
+- Manual acceptance by the user.
 
-## Cross-cutting behaviour worth knowing before editing
+## Invariants
 
-- **State flows one way.** `g_mode` in `main.cpp` is a cache of `PowerGetActualOverlayScheme`, never
-  a source of truth. Every path that changes it calls `UpdateTrayIcon()`. Because overlay changes
-  broadcast nothing, `ResyncFromSystem()` is called from five places (menu open, `WM_ENTERIDLE`,
-  AC/DC broadcast, session unlock, 60 s timer) — that redundancy is deliberate, not leftover.
-- **The message loop is not `GetMessage`.** `RunMessageLoop()` uses `MsgWaitForMultipleObjectsEx` so
-  the `RegNotifyChangeKeyValue` theme event is waited on alongside the queue. Adding another waitable
-  handle means extending the array there, not spawning a thread.
-- **Degraded mode is a first-class path.** A missing export leaves the program running with mode
-  commands greyed out and the `IDS_UNAVAILABLE` tooltip. A failed `OsdInit` likewise loses only the
-  OSD. Neither is allowed to take down the tray icon.
-- **The tray icon has a fallback identity.** `NIF_GUID` registration is bound to the exe path, so
-  `AddTrayIcon()` retries with a `uID` key when the add fails (typically after the binary moved).
-- **One OSD DIB, allocated for the worst case.** `osd.cpp` allocates 450×160 (240 DPI cap) once and
-  draws into the top-left sub-rect, passing `psize` to `UpdateLayeredWindow` — that is how "one DIB
-  for the lifetime" survives per-monitor DPI. Alpha in the DIB is only 0 or 255; the 0.75 hold and
-  the fade come from `BLENDFUNCTION.SourceConstantAlpha`, so fading never redraws.
-- **Costs currently on the books:** one 60 s `WM_TIMER`, two short-lived OSD timers while visible,
-  one event + one open `HKEY` for the theme watch, one 288 KB DIB. No threads.
+- **State flows one way.** `g_mode` is a cache of `PowerGetActualOverlayScheme`, never a source of
+  truth. Every path that changes it calls `UpdateTrayIcon()`.
+- **The message loop is not `GetMessage`.** `RunMessageLoop()` uses `MsgWaitForMultipleObjectsEx` to
+  wait on the two `RegNotifyChangeKeyValue` events (theme, overlay) alongside the queue. The handle
+  array is built once and each watch is optional. Another waitable handle means extending that array,
+  not spawning a thread.
+- **Degraded mode is first-class.** A missing export or a failed `OsdInit` costs only that feature;
+  neither may take down the tray icon.
+- **The tray icon has a fallback identity.** `NIF_GUID` is bound to the exe path, so `AddTrayIcon()`
+  retries with a `uID` key when the add fails (typically after the binary moved).
+- **One OSD DIB, allocated for the worst case.** 450×160 (240 DPI cap) once, drawn into the top-left
+  sub-rect with `psize` passed to `UpdateLayeredWindow`. DIB alpha is only 0 or 255; the hold and fade
+  come from `BLENDFUNCTION.SourceConstantAlpha`, so fading never redraws.
+- **Costs on the books:** one 60 s `WM_TIMER`, two short-lived OSD timers while visible, two events +
+  two open `HKEY`s (theme, overlay), one 288 KB DIB. No threads.
 
 ## Rules for Claude
 

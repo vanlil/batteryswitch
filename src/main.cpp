@@ -16,6 +16,11 @@ const wchar_t kMutexName[] = L"Local\\PowerModeTray.SingleInstance";
 const wchar_t kThemeKey[] =
     L"Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize";
 const wchar_t kThemeValue[] = L"SystemUsesLightTheme";
+// The overlay APIs broadcast nothing, but the power service mirrors the active
+// overlay here as ActiveOverlay{Ac,Dc}PowerScheme. Watching the key is how an
+// external change (Settings, the Win+X hotkey) is noticed without polling.
+const wchar_t kOverlayKey[] =
+    L"SYSTEM\\CurrentControlSet\\Control\\Power\\User\\PowerSchemes";
 
 // Fixed so the icon keeps its position across restarts.
 const GUID kTrayIconGuid = {
@@ -39,6 +44,8 @@ HANDLE g_singleInstance = nullptr;
 HPOWERNOTIFY g_powerNotify = nullptr;
 HKEY g_themeKey = nullptr;
 HANDLE g_themeEvent = nullptr;
+HKEY g_overlayKey = nullptr;
+HANDLE g_overlayEvent = nullptr;
 bool g_sessionNotify = false;
 UINT g_taskbarCreated = 0;
 bool g_iconAdded = false;
@@ -289,6 +296,41 @@ void StopThemeWatch() {
     }
 }
 
+bool ArmOverlayWatch() {
+    if (!g_overlayKey || !g_overlayEvent) return false;
+    ResetEvent(g_overlayEvent);
+    return RegNotifyChangeKeyValue(g_overlayKey, FALSE, REG_NOTIFY_CHANGE_LAST_SET,
+                                   g_overlayEvent, TRUE) == ERROR_SUCCESS;
+}
+
+bool StartOverlayWatch() {
+    // KEY_NOTIFY only: this key is read-only for a standard user, and we never
+    // write it. Failure leaves the 60 s timer as the fallback.
+    if (RegOpenKeyExW(HKEY_LOCAL_MACHINE, kOverlayKey, 0, KEY_NOTIFY, &g_overlayKey) !=
+        ERROR_SUCCESS) {
+        g_overlayKey = nullptr;
+        return false;
+    }
+    g_overlayEvent = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+    if (!g_overlayEvent) {
+        RegCloseKey(g_overlayKey);
+        g_overlayKey = nullptr;
+        return false;
+    }
+    return ArmOverlayWatch();
+}
+
+void StopOverlayWatch() {
+    if (g_overlayEvent) {
+        CloseHandle(g_overlayEvent);
+        g_overlayEvent = nullptr;
+    }
+    if (g_overlayKey) {
+        RegCloseKey(g_overlayKey);
+        g_overlayKey = nullptr;
+    }
+}
+
 LRESULT CALLBACK WndProc(HWND wnd, UINT msg, WPARAM wp, LPARAM lp) {
     if (msg == g_taskbarCreated && g_taskbarCreated != 0) {
         // Explorer restarted; our icon went with it.
@@ -370,15 +412,35 @@ LRESULT CALLBACK WndProc(HWND wnd, UINT msg, WPARAM wp, LPARAM lp) {
 }
 
 int RunMessageLoop() {
+    // Waitable handles alongside the message queue. Both are optional: either
+    // watch may have failed to start, and the program still runs without it.
+    HANDLE handles[2];
+    DWORD count = 0;
+    DWORD themeIndex = MAXDWORD;
+    DWORD overlayIndex = MAXDWORD;
+    if (g_themeEvent) {
+        themeIndex = count;
+        handles[count++] = g_themeEvent;
+    }
+    if (g_overlayEvent) {
+        overlayIndex = count;
+        handles[count++] = g_overlayEvent;
+    }
+
     for (;;) {
-        const DWORD count = g_themeEvent ? 1 : 0;
         const DWORD result = MsgWaitForMultipleObjectsEx(
-            count, count ? &g_themeEvent : nullptr, INFINITE, QS_ALLINPUT,
+            count, count ? handles : nullptr, INFINITE, QS_ALLINPUT,
             MWMO_INPUTAVAILABLE);
 
-        if (count && result == WAIT_OBJECT_0) {
-            UpdateTrayIcon();
-            ArmThemeWatch();
+        if (result < WAIT_OBJECT_0 + count) {
+            const DWORD signalled = result - WAIT_OBJECT_0;
+            if (signalled == themeIndex) {
+                UpdateTrayIcon();
+                ArmThemeWatch();
+            } else if (signalled == overlayIndex) {
+                ResyncFromSystem();
+                ArmOverlayWatch();
+            }
             continue;
         }
         if (result == WAIT_OBJECT_0 + count) {
@@ -408,6 +470,7 @@ void Cleanup() {
     }
     RemoveTrayIcon();
     StopThemeWatch();
+    StopOverlayWatch();
     if (g_menu) {
         DestroyMenu(g_menu);
         g_menu = nullptr;
@@ -475,6 +538,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int) {
     }
 
     StartThemeWatch();
+    StartOverlayWatch();
     g_powerNotify = RegisterPowerSettingNotification(g_wnd, &kGuidAcDcPowerSource,
                                                      DEVICE_NOTIFY_WINDOW_HANDLE);
     // Failure costs only the unlock resync; the 60 s timer still covers it. What
